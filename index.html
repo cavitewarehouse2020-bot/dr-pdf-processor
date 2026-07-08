@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>DR OCR PDF Processor</title>
+<title>Fast DR OCR PDF Processor</title>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.jsscript>
 
 <style>
 body {
@@ -19,7 +19,7 @@ h2 {
 }
 
 #dropZone {
-    height: 240px;
+    height: 230px;
     border: 3px dashed #0078d7;
     border-radius: 12px;
     background: white;
@@ -82,7 +82,7 @@ th {
 
 <body>
 
-<h2>DR OCR PDF Processor</h2>
+<h2>Fast DR OCR PDF Processor</h2>
 
 <div id="dropZone">
     Drag & Drop PDF Files Here
@@ -114,6 +114,10 @@ const summary = document.getElementById("summary");
 const fileList = document.getElementById("fileList");
 
 let fileCounter = 0;
+let ocrWorker = null;
+
+const OCR_SCALE = 2;
+const TOP_CROP_PERCENT = 0.45;
 
 window.onload = function () {
     summary.innerHTML =
@@ -152,8 +156,14 @@ dropZone.addEventListener("drop", async function(e) {
     }
 
     summary.innerHTML =
+        "Preparing OCR engine...<br>" +
+        "This may take a few seconds only on the first file.";
+
+    await prepareOCRWorker();
+
+    summary.innerHTML =
         "Processing " + files.length + " file(s)...<br>" +
-        "Note: OCR is slower because the app reads the image inside the PDF.";
+        "Fast mode: Page 1 only, top area first, 180° first.";
 
     for (const file of files) {
         fileCounter++;
@@ -168,8 +178,14 @@ dropZone.addEventListener("drop", async function(e) {
         await processPDF(file, row);
     }
 
-    summary.innerHTML += "<br><br>✅ Finished processing batch.";
+    summary.innerHTML += "<br><br>✅ Batch finished.";
 });
+
+async function prepareOCRWorker() {
+    if (!ocrWorker) {
+        ocrWorker = await Tesseract.createWorker("eng");
+    }
+}
 
 function addFileRow(number, fileName) {
     const row = document.createElement("tr");
@@ -207,41 +223,71 @@ async function processPDF(file, row) {
             data: pdfData
         }).promise;
 
+        const page = await pdf.getPage(1);
+
         let bestResult = {
             drNumber: null,
             text: "",
             rotation: null,
+            method: "",
             score: 0
         };
 
         /*
-          Speed setting:
-          Since your file was upside down, we try 0° and 180° only.
-          This is faster than checking 0, 90, 180, 270.
+          Faster order:
+          Since your PDF was upside down, try 180 first.
+          Then try normal 0.
         */
-        const rotations = [0, 180];
+        const rotations = [180, 0];
 
         /*
-          Speed setting:
-          DR number is normally on page 1.
-          This version OCRs page 1 first. If your DR is always on page 1,
-          this is much faster.
+          First pass:
+          OCR only top area where DR No normally appears.
+          Much faster than full-page OCR.
         */
-        const maxPagesToScan = Math.min(pdf.numPages, 1);
+        for (const rotation of rotations) {
+            updateRow(
+                row,
+                "",
+                "",
+                "Fast OCR top area, rotation " + rotation + "°...",
+                "status-processing"
+            );
 
-        for (let pageNo = 1; pageNo <= maxPagesToScan; pageNo++) {
-            const page = await pdf.getPage(pageNo);
+            const text = await ocrPageArea(page, rotation, true);
+            const result = extractDRNumber(text);
 
+            if (result.score > bestResult.score) {
+                bestResult = {
+                    drNumber: result.drNumber,
+                    text: text,
+                    rotation: rotation,
+                    method: "Top area",
+                    score: result.score
+                };
+            }
+
+            if (result.score >= 100) {
+                break;
+            }
+        }
+
+        /*
+          Fallback:
+          If top area did not find the DR,
+          OCR the full page but still only page 1.
+        */
+        if (!bestResult.drNumber) {
             for (const rotation of rotations) {
                 updateRow(
                     row,
                     "",
                     "",
-                    "OCR Page " + pageNo + " Rotation " + rotation + "°...",
+                    "Fallback full-page OCR, rotation " + rotation + "°...",
                     "status-processing"
                 );
 
-                const text = await ocrPage(page, rotation);
+                const text = await ocrPageArea(page, rotation, false);
                 const result = extractDRNumber(text);
 
                 if (result.score > bestResult.score) {
@@ -249,6 +295,7 @@ async function processPDF(file, row) {
                         drNumber: result.drNumber,
                         text: text,
                         rotation: rotation,
+                        method: "Full page",
                         score: result.score
                     };
                 }
@@ -257,15 +304,12 @@ async function processPDF(file, row) {
                     break;
                 }
             }
-
-            if (bestResult.score >= 100) {
-                break;
-            }
         }
 
         console.log("===== OCR TEXT FOR " + file.name + " =====");
         console.log(bestResult.text);
         console.log("Best rotation:", bestResult.rotation);
+        console.log("Method:", bestResult.method);
         console.log("Detected DR:", bestResult.drNumber);
 
         if (!bestResult.drNumber) {
@@ -282,18 +326,13 @@ async function processPDF(file, row) {
 
         const newFileName = bestResult.drNumber + ".pdf";
 
-        /*
-          Important:
-          This downloads the ORIGINAL uploaded PDF.
-          It does not rebuild the PDF, so the new file will not be empty.
-        */
         downloadOriginalFile(file, newFileName);
 
         updateRow(
             row,
             bestResult.drNumber,
             newFileName,
-            "✅ Downloaded | Rotation " + bestResult.rotation + "°",
+            "✅ Downloaded | " + bestResult.method + " | " + bestResult.rotation + "°",
             "status-success"
         );
 
@@ -310,9 +349,9 @@ async function processPDF(file, row) {
     }
 }
 
-async function ocrPage(page, rotation) {
+async function ocrPageArea(page, rotation, cropTopOnly) {
     const viewport = page.getViewport({
-        scale: 3,
+        scale: OCR_SCALE,
         rotation: rotation
     });
 
@@ -327,10 +366,33 @@ async function ocrPage(page, rotation) {
         viewport: viewport
     }).promise;
 
-    const result = await Tesseract.recognize(
-        canvas,
-        "eng"
-    );
+    let targetCanvas = canvas;
+
+    if (cropTopOnly) {
+        const cropCanvas = document.createElement("canvas");
+        const cropContext = cropCanvas.getContext("2d");
+
+        const cropHeight = Math.floor(canvas.height * TOP_CROP_PERCENT);
+
+        cropCanvas.width = canvas.width;
+        cropCanvas.height = cropHeight;
+
+        cropContext.drawImage(
+            canvas,
+            0,
+            0,
+            canvas.width,
+            cropHeight,
+            0,
+            0,
+            canvas.width,
+            cropHeight
+        );
+
+        targetCanvas = cropCanvas;
+    }
+
+    const result = await ocrWorker.recognize(targetCanvas);
 
     return result.data.text || "";
 }
@@ -348,7 +410,6 @@ function extractDRNumber(text) {
       Strong match:
       DR No 5001178516
       DR NO: 5001178516
-      DR Number 5001178516
       DR# 5001178516
     */
     match = cleanText.match(
@@ -368,7 +429,7 @@ function extractDRNumber(text) {
 
     /*
       Secondary match:
-      any number near DR text.
+      Any long number near DR text.
     */
     match = cleanText.match(
         /DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i
@@ -387,7 +448,7 @@ function extractDRNumber(text) {
 
     /*
       Fallback:
-      Eagle Cement DR numbers from your sample start with 500.
+      Your Eagle Cement DR number starts with 500.
     */
     const possibleNumbers = cleanText.match(/[0-9][0-9\s-]{7,20}[0-9]/g);
 
