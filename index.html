@@ -19,7 +19,7 @@ h2 {
 }
 
 #dropZone {
-    height: 260px;
+    height: 240px;
     border: 3px dashed #0078d7;
     border-radius: 12px;
     background: white;
@@ -28,20 +28,54 @@ h2 {
     align-items: center;
     font-size: 22px;
     cursor: pointer;
+    margin-bottom: 20px;
 }
 
 #dropZone.dragover {
     background: #e8f3ff;
 }
 
-#status {
-    margin-top: 20px;
+#summary {
     background: white;
-    padding: 20px;
+    padding: 15px;
     border-radius: 10px;
-    white-space: pre-wrap;
+    margin-bottom: 15px;
     font-family: Consolas, monospace;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+th, td {
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
     font-size: 14px;
+}
+
+th {
+    background: #0078d7;
+    color: white;
+}
+
+.status-processing {
+    color: #d98200;
+    font-weight: bold;
+}
+
+.status-success {
+    color: green;
+    font-weight: bold;
+}
+
+.status-error {
+    color: red;
+    font-weight: bold;
 }
 </style>
 </head>
@@ -54,20 +88,38 @@ h2 {
     Drag & Drop PDF Files Here
 </div>
 
-<div id="status">Waiting for PDF...</div>
+<div id="summary">
+    Loading libraries...
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Original File</th>
+            <th>Detected DR No.</th>
+            <th>New File Name</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody id="fileList"></tbody>
+</table>
 
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc =
 "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const dropZone = document.getElementById("dropZone");
-const statusDiv = document.getElementById("status");
+const summary = document.getElementById("summary");
+const fileList = document.getElementById("fileList");
+
+let fileCounter = 0;
 
 window.onload = function () {
-    statusDiv.innerHTML =
+    summary.innerHTML =
         "PDF.js: " + typeof pdfjsLib +
-        "\nTesseract: " + typeof Tesseract +
-        "\n\nWaiting for PDF...";
+        "<br>Tesseract: " + typeof Tesseract +
+        "<br><br>Waiting for PDF files...";
 };
 
 dropZone.addEventListener("dragover", function(e) {
@@ -83,40 +135,69 @@ dropZone.addEventListener("drop", async function(e) {
     e.preventDefault();
     dropZone.classList.remove("dragover");
 
-    const files = e.dataTransfer.files;
+    const files = Array.from(e.dataTransfer.files);
 
     if (files.length === 0) {
         return;
     }
 
-    statusDiv.innerHTML =
-        "PDF.js: " + typeof pdfjsLib +
-        "\nTesseract: " + typeof Tesseract +
-        "\n\nProcessing " + files.length + " file(s)...\n";
-
     if (typeof pdfjsLib === "undefined") {
-        statusDiv.innerHTML += "\n❌ PDF.js is not loaded.";
+        summary.innerHTML = "❌ PDF.js is not loaded.";
         return;
     }
 
     if (typeof Tesseract === "undefined") {
-        statusDiv.innerHTML += "\n❌ Tesseract is not loaded.";
+        summary.innerHTML = "❌ Tesseract is not loaded.";
         return;
     }
 
+    summary.innerHTML =
+        "Processing " + files.length + " file(s)...<br>" +
+        "Note: OCR is slower because the app reads the image inside the PDF.";
+
     for (const file of files) {
+        fileCounter++;
+
+        const row = addFileRow(fileCounter, file.name);
+
         if (file.type !== "application/pdf") {
-            statusDiv.innerHTML += "\n❌ Not a PDF: " + file.name;
+            updateRow(row, "", "", "❌ Not a PDF", "status-error");
             continue;
         }
 
-        await processPDF(file);
+        await processPDF(file, row);
     }
+
+    summary.innerHTML += "<br><br>✅ Finished processing batch.";
 });
 
-async function processPDF(file) {
+function addFileRow(number, fileName) {
+    const row = document.createElement("tr");
+
+    row.innerHTML =
+        "<td>" + number + "</td>" +
+        "<td>" + escapeHtml(fileName) + "</td>" +
+        "<td class='dr'></td>" +
+        "<td class='newname'></td>" +
+        "<td class='status status-processing'>Queued</td>";
+
+    fileList.appendChild(row);
+
+    return row;
+}
+
+function updateRow(row, drNo, newName, status, statusClass) {
+    row.querySelector(".dr").textContent = drNo || "";
+    row.querySelector(".newname").textContent = newName || "";
+
+    const statusCell = row.querySelector(".status");
+    statusCell.textContent = status;
+    statusCell.className = "status " + statusClass;
+}
+
+async function processPDF(file, row) {
     try {
-        statusDiv.innerHTML += "\n\n📄 Processing: " + file.name;
+        updateRow(row, "", "", "Reading PDF...", "status-processing");
 
         const arrayBuffer = await file.arrayBuffer();
 
@@ -133,14 +214,32 @@ async function processPDF(file) {
             score: 0
         };
 
-        const rotations = [0, 90, 180, 270];
+        /*
+          Speed setting:
+          Since your file was upside down, we try 0° and 180° only.
+          This is faster than checking 0, 90, 180, 270.
+        */
+        const rotations = [0, 180];
 
-        for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+        /*
+          Speed setting:
+          DR number is normally on page 1.
+          This version OCRs page 1 first. If your DR is always on page 1,
+          this is much faster.
+        */
+        const maxPagesToScan = Math.min(pdf.numPages, 1);
+
+        for (let pageNo = 1; pageNo <= maxPagesToScan; pageNo++) {
             const page = await pdf.getPage(pageNo);
 
             for (const rotation of rotations) {
-                statusDiv.innerHTML +=
-                    "\n🔍 OCR Page " + pageNo + " Rotation " + rotation + "°";
+                updateRow(
+                    row,
+                    "",
+                    "",
+                    "OCR Page " + pageNo + " Rotation " + rotation + "°...",
+                    "status-processing"
+                );
 
                 const text = await ocrPage(page, rotation);
                 const result = extractDRNumber(text);
@@ -164,29 +263,50 @@ async function processPDF(file) {
             }
         }
 
-        console.log("===== BEST OCR TEXT =====");
+        console.log("===== OCR TEXT FOR " + file.name + " =====");
         console.log(bestResult.text);
         console.log("Best rotation:", bestResult.rotation);
-        console.log("Best DR:", bestResult.drNumber);
+        console.log("Detected DR:", bestResult.drNumber);
 
         if (!bestResult.drNumber) {
-            statusDiv.innerHTML += "\n❌ DR Number Not Found: " + file.name;
-            statusDiv.innerHTML += "\n\n===== OCR TEXT PREVIEW =====\n";
-            statusDiv.innerHTML += bestResult.text.substring(0, 3000);
+            updateRow(
+                row,
+                "",
+                "",
+                "❌ DR Number Not Found",
+                "status-error"
+            );
+
             return;
         }
 
-        downloadOriginalFile(file, bestResult.drNumber + ".pdf");
+        const newFileName = bestResult.drNumber + ".pdf";
 
-        statusDiv.innerHTML +=
-            "\n✅ " + file.name +
-            " → " + bestResult.drNumber + ".pdf" +
-            "\nBest Rotation Used: " + bestResult.rotation + "°";
+        /*
+          Important:
+          This downloads the ORIGINAL uploaded PDF.
+          It does not rebuild the PDF, so the new file will not be empty.
+        */
+        downloadOriginalFile(file, newFileName);
+
+        updateRow(
+            row,
+            bestResult.drNumber,
+            newFileName,
+            "✅ Downloaded | Rotation " + bestResult.rotation + "°",
+            "status-success"
+        );
 
     } catch (error) {
         console.error(error);
-        statusDiv.innerHTML +=
-            "\n❌ Error processing " + file.name + ": " + error.message;
+
+        updateRow(
+            row,
+            "",
+            "",
+            "❌ Error: " + error.message,
+            "status-error"
+        );
     }
 }
 
@@ -222,9 +342,18 @@ function extractDRNumber(text) {
         .trim();
 
     let match;
-    let drNumber = null;
+    let drNumber;
 
-    match = cleanText.match(/D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i);
+    /*
+      Strong match:
+      DR No 5001178516
+      DR NO: 5001178516
+      DR Number 5001178516
+      DR# 5001178516
+    */
+    match = cleanText.match(
+        /D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i
+    );
 
     if (match) {
         drNumber = match[1].replace(/\D/g, "");
@@ -237,7 +366,13 @@ function extractDRNumber(text) {
         }
     }
 
-    match = cleanText.match(/DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i);
+    /*
+      Secondary match:
+      any number near DR text.
+    */
+    match = cleanText.match(
+        /DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i
+    );
 
     if (match) {
         drNumber = match[1].replace(/\D/g, "");
@@ -250,6 +385,10 @@ function extractDRNumber(text) {
         }
     }
 
+    /*
+      Fallback:
+      Eagle Cement DR numbers from your sample start with 500.
+    */
     const possibleNumbers = cleanText.match(/[0-9][0-9\s-]{7,20}[0-9]/g);
 
     if (possibleNumbers) {
@@ -292,6 +431,15 @@ function downloadOriginalFile(file, newFileName) {
     document.body.removeChild(link);
 
     URL.revokeObjectURL(url);
+}
+
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
 }
 </script>
 
