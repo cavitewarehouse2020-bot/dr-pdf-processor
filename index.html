@@ -85,7 +85,9 @@ dropZone.addEventListener("drop", async function(e) {
 
     const files = e.dataTransfer.files;
 
-    if (files.length === 0) return;
+    if (files.length === 0) {
+        return;
+    }
 
     statusDiv.innerHTML =
         "PDF.js: " + typeof pdfjsLib +
@@ -116,10 +118,12 @@ async function processPDF(file) {
     try {
         statusDiv.innerHTML += "\n\n📄 Processing: " + file.name;
 
-        const buffer = await file.arrayBuffer();
+        const arrayBuffer = await file.arrayBuffer();
+
+        const pdfData = new Uint8Array(arrayBuffer.slice(0));
 
         const pdf = await pdfjsLib.getDocument({
-            data: buffer
+            data: pdfData
         }).promise;
 
         let bestResult = {
@@ -139,7 +143,6 @@ async function processPDF(file) {
                     "\n🔍 OCR Page " + pageNo + " Rotation " + rotation + "°";
 
                 const text = await ocrPage(page, rotation);
-
                 const result = extractDRNumber(text);
 
                 if (result.score > bestResult.score) {
@@ -173,7 +176,7 @@ async function processPDF(file) {
             return;
         }
 
-        downloadRenamedPDF(buffer, bestResult.drNumber + ".pdf");
+        downloadOriginalFile(file, bestResult.drNumber + ".pdf");
 
         statusDiv.innerHTML +=
             "\n✅ " + file.name +
@@ -220,21 +223,33 @@ function extractDRNumber(text) {
 
     let match;
     let drNumber = null;
-    let score = 0;
 
-    // Strongest match: DR No followed by number
-    match = cleanText.match(/D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,15}([0-9][0-9\s-]{7,20})/i);
+    match = cleanText.match(/D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i);
 
     if (match) {
         drNumber = match[1].replace(/\D/g, "");
 
         if (drNumber.length >= 8) {
-            score = 100;
-            return { drNumber, score };
+            return {
+                drNumber: drNumber,
+                score: 100
+            };
         }
     }
 
-    // Eagle Cement DRs usually start with 500
+    match = cleanText.match(/DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i);
+
+    if (match) {
+        drNumber = match[1].replace(/\D/g, "");
+
+        if (drNumber.length >= 8) {
+            return {
+                drNumber: drNumber,
+                score: 90
+            };
+        }
+    }
+
     const possibleNumbers = cleanText.match(/[0-9][0-9\s-]{7,20}[0-9]/g);
 
     if (possibleNumbers) {
@@ -265,17 +280,12 @@ function extractDRNumber(text) {
     };
 }
 
-function downloadRenamedPDF(buffer, fileName) {
-    const blob = new Blob(
-        [buffer],
-        { type: "application/pdf" }
-    );
-
-    const url = URL.createObjectURL(blob);
+function downloadOriginalFile(file, newFileName) {
+    const url = URL.createObjectURL(file);
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = fileName;
+    link.download = newFileName;
 
     document.body.appendChild(link);
     link.click();
