@@ -407,32 +407,25 @@ function extractDRNumber(text) {
     let drNumber;
 
     /*
-      Strong match:
-      DR No 5001178516
-      DR NO: 5001178516
-      DR# 5001178516
+      1. Exact Eagle Cement Match (Highest Priority):
+      Looks for E and C (with or without spaces/slashes), followed by a 10-digit number starting with 5.
+      Forces the final output to be exactly EC5000002125, ignoring OCR spacing errors.
     */
-    match = cleanText.match(
-        /D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i
-    );
-
+    match = cleanText.match(/E\s*C\s*[\/\-]?\s*(5\d{9})/i);
+    
     if (match) {
-        drNumber = match[1].replace(/\D/g, "");
-
-        if (drNumber.length >= 8) {
-            return {
-                drNumber: drNumber,
-                score: 100
-            };
-        }
+        return {
+            drNumber: "EC" + match[1],
+            score: 100
+        };
     }
 
     /*
-      Secondary match:
-      Any long number near DR text.
+      2. Strong match (Fallback if EC prefix is missing):
+      DR No 5001178516
     */
     match = cleanText.match(
-        /DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i
+        /D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i
     );
 
     if (match) {
@@ -447,8 +440,27 @@ function extractDRNumber(text) {
     }
 
     /*
-      Fallback:
-      Your Eagle Cement DR number starts with 500.
+      3. Secondary match:
+      Any long number near DR text.
+    */
+    match = cleanText.match(
+        /DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i
+    );
+
+    if (match) {
+        drNumber = match[1].replace(/\D/g, "");
+
+        if (drNumber.length >= 8) {
+            return {
+                drNumber: drNumber,
+                score: 80
+            };
+        }
+    }
+
+    /*
+      4. Fallback:
+      Finds any 10-digit number starting with 500.
     */
     const possibleNumbers = cleanText.match(/[0-9][0-9\s-]{7,20}[0-9]/g);
 
@@ -462,7 +474,7 @@ function extractDRNumber(text) {
         if (startsWith500) {
             return {
                 drNumber: startsWith500,
-                score: 80
+                score: 70
             };
         }
 
