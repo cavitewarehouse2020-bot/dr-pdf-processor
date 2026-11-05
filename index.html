@@ -117,8 +117,8 @@ let fileCounter = 0;
 let ocrWorker = null;
 
 // SPEED OPTIMIZATIONS
-const OCR_SCALE = 1.5; // Reduced from 2.0 to speed up rendering and OCR processing
-const TOP_CROP_PERCENT = 0.35; // Reduced from 0.45 to scan a smaller, more targeted area
+const OCR_SCALE = 1.5;
+const TOP_CROP_PERCENT = 0.35;
 
 window.onload = function () {
     summary.innerHTML =
@@ -217,7 +217,6 @@ async function processPDF(file, row) {
         updateRow(row, "", "", "Reading PDF...", "status-processing");
 
         const arrayBuffer = await file.arrayBuffer();
-
         const pdfData = new Uint8Array(arrayBuffer.slice(0));
 
         const pdf = await pdfjsLib.getDocument({
@@ -306,7 +305,6 @@ async function processPDF(file, row) {
                 "❌ DR Number Not Found",
                 "status-error"
             );
-
             return;
         }
 
@@ -324,7 +322,6 @@ async function processPDF(file, row) {
 
     } catch (error) {
         console.error(error);
-
         updateRow(
             row,
             "",
@@ -379,99 +376,25 @@ async function ocrPageArea(page, rotation, cropTopOnly) {
     }
 
     const result = await ocrWorker.recognize(targetCanvas);
-
     return result.data.text || "";
 }
 
 function extractDRNumber(text) {
-    const cleanText = text
-        .replace(/[|]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+    // 1. Squash the text together by removing spaces and all common OCR punctuation noise.
+    const compressedText = text.replace(/[\s\/\-\.\:\,\_|]/g, "");
 
-    let match;
-    let drNumber;
+    // 2. STRICT MATCH: Look ONLY for a 10-digit sequence that starts exactly with "500"
+    const match = compressedText.match(/(500\d{7})/);
 
-    /*
-      1. Exact Eagle Cement Match (Highest Priority):
-      Looks for E and C (with or without spaces/slashes), followed by a 10-digit number starting with 5.
-      Forces the final output to be exactly EC5000002125, ignoring OCR spacing errors.
-    */
-    match = cleanText.match(/E\s*C\s*[\/\-]?\s*(5\d{9})/i);
-    
     if (match) {
+        // 3. We found the 10 digits! Automatically attach "EC" to the front of it.
         return {
             drNumber: "EC" + match[1],
             score: 100
         };
     }
 
-    /*
-      2. Strong match (Fallback if EC prefix is missing):
-      DR No 5001178516
-    */
-    match = cleanText.match(
-        /D\s*R\s*(?:No|NO|N0|Number|#)?[\s.:#-]{0,20}([0-9][0-9\s-]{7,20})/i
-    );
-
-    if (match) {
-        drNumber = match[1].replace(/\D/g, "");
-
-        if (drNumber.length >= 8) {
-            return {
-                drNumber: drNumber,
-                score: 90
-            };
-        }
-    }
-
-    /*
-      3. Secondary match:
-      Any long number near DR text.
-    */
-    match = cleanText.match(
-        /DR[\s\S]{0,100}?([0-9][0-9\s-]{7,20})/i
-    );
-
-    if (match) {
-        drNumber = match[1].replace(/\D/g, "");
-
-        if (drNumber.length >= 8) {
-            return {
-                drNumber: drNumber,
-                score: 80
-            };
-        }
-    }
-
-    /*
-      4. Fallback:
-      Finds any 10-digit number starting with 500.
-    */
-    const possibleNumbers = cleanText.match(/[0-9][0-9\s-]{7,20}[0-9]/g);
-
-    if (possibleNumbers) {
-        const cleanedNumbers = possibleNumbers
-            .map(n => n.replace(/\D/g, ""))
-            .filter(n => n.length >= 8);
-
-        const startsWith500 = cleanedNumbers.find(n => n.startsWith("500"));
-
-        if (startsWith500) {
-            return {
-                drNumber: startsWith500,
-                score: 70
-            };
-        }
-
-        if (cleanedNumbers.length > 0) {
-            return {
-                drNumber: cleanedNumbers[0],
-                score: 40
-            };
-        }
-    }
-
+    // 4. If it doesn't find a 10-digit number starting with 500, reject it.
     return {
         drNumber: null,
         score: 0
