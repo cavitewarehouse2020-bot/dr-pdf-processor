@@ -116,8 +116,9 @@ const fileList = document.getElementById("fileList");
 let fileCounter = 0;
 let ocrWorker = null;
 
-const OCR_SCALE = 2;
-const TOP_CROP_PERCENT = 0.45;
+// SPEED OPTIMIZATIONS
+const OCR_SCALE = 1.5; // Reduced from 2.0 to speed up rendering and OCR processing
+const TOP_CROP_PERCENT = 0.35; // Reduced from 0.45 to scan a smaller, more targeted area
 
 window.onload = function () {
     summary.innerHTML =
@@ -233,18 +234,8 @@ async function processPDF(file, row) {
             score: 0
         };
 
-        /*
-          Faster order:
-          Since your PDF was upside down, try 180 first.
-          Then try normal 0.
-        */
         const rotations = [180, 0];
 
-        /*
-          First pass:
-          OCR only top area where DR No normally appears.
-          Much faster than full-page OCR.
-        */
         for (const rotation of rotations) {
             updateRow(
                 row,
@@ -272,11 +263,6 @@ async function processPDF(file, row) {
             }
         }
 
-        /*
-          Fallback:
-          If top area did not find the DR,
-          OCR the full page but still only page 1.
-        */
         if (!bestResult.drNumber) {
             for (const rotation of rotations) {
                 updateRow(
